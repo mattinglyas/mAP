@@ -1,6 +1,7 @@
 import glob
 import json
 import os
+from pprint import pprint
 import shutil
 import operator
 import sys
@@ -19,6 +20,7 @@ parser.add_argument('-q', '--quiet', help="minimalistic console output.", action
 parser.add_argument('-i', '--ignore', nargs='+', type=str, help="ignore a list of classes.")
 # argparse receiving list of classes with specific IoU (e.g., python main.py --set-class-iou person 0.7)
 parser.add_argument('--set-class-iou', nargs='+', type=str, help="set IoU for a specific class.")
+parser.add_argument('-v7', '--voc-2007', help="use voc2007 definition of mAP", action="store_true")
 args = parser.parse_args()
 
 '''
@@ -139,13 +141,32 @@ def is_float_between_0_and_1(value):
     except ValueError:
         return False
 
+
+def voc_ap_07(prec, rec):
+    ap = 0.
+    mrec = np.flip(np.arange(0., 1.1, 0.1))
+    mprec = []
+
+    for t in mrec:
+        if np.sum(rec >= t) == 0:
+            p = 0
+        else:
+            p = np.max(prec[rec >= t])
+        mprec.append(p)
+        ap = ap + p / 11
+
+    mrec = mrec.tolist()
+    mprec = mprec
+    return ap, mprec, mrec
+
+
 """
  Calculate the AP given the recall and precision array
     1st) We compute a version of the measured precision/recall curve with
          precision monotonically decreasing
     2nd) We compute the AP as the area under this curve by numerical integration.
 """
-def voc_ap(rec, prec):
+def voc_ap_12(rec, prec):
     """
     --- Official matlab code VOC2012---
     mrec=[0 ; rec ; 1];
@@ -654,25 +675,32 @@ with open(output_files_path + "/output.txt", 'w') as output_file:
 
         #print(tp)
         # compute precision/recall
-        cumsum = 0
-        for idx, val in enumerate(fp):
-            fp[idx] += cumsum
-            cumsum += val
-        cumsum = 0
-        for idx, val in enumerate(tp):
-            tp[idx] += cumsum
-            cumsum += val
-        #print(tp)
-        rec = tp[:]
-        for idx, val in enumerate(tp):
-            rec[idx] = float(tp[idx]) / gt_counter_per_class[class_name]
-        #print(rec)
-        prec = tp[:]
-        for idx, val in enumerate(tp):
-            prec[idx] = float(tp[idx]) / (fp[idx] + tp[idx])
-        #print(prec)
+        if args.voc_2007:
+            fp = np.cumsum(fp)
+            tp = np.cumsum(tp)
+            rec = tp / float(gt_counter_per_class[class_name])
+            prec = tp / np.maximum(tp + fp, np.finfo(np.float64).eps)
+            ap, mrec, mprec = voc_ap_07(rec, prec)
+        else:
+            cumsum = 0
+            for idx, val in enumerate(fp):
+                fp[idx] += cumsum
+                cumsum += val
+            cumsum = 0
+            for idx, val in enumerate(tp):
+                tp[idx] += cumsum
+                cumsum += val
+            #print(tp)
+            rec = tp[:]
+            for idx, val in enumerate(tp):
+                rec[idx] = float(tp[idx]) / gt_counter_per_class[class_name]
+            #print(rec)
+            prec = tp[:]
+            for idx, val in enumerate(tp):
+                prec[idx] = float(tp[idx]) / (fp[idx] + tp[idx])
+            #print(prec)
+            ap, mrec, mprec = voc_ap_12(rec[:], prec[:])
 
-        ap, mrec, mprec = voc_ap(rec[:], prec[:])
         sum_AP += ap
         text = "{0:.2f}%".format(ap*100) + " = " + class_name + " AP " #class_name + " AP = {0:.2f}%".format(ap*100)
         """
@@ -696,8 +724,18 @@ with open(output_files_path + "/output.txt", 'w') as output_file:
             plt.plot(rec, prec, '-o')
             # add a new penultimate point to the list (mrec[-2], 0.0)
             # since the last line segment (and respective area) do not affect the AP value
-            area_under_curve_x = mrec[:-1] + [mrec[-2]] + [mrec[-1]]
-            area_under_curve_y = mprec[:-1] + [0.0] + [mprec[-1]]
+            if args.voc_2007:
+                area_under_curve_x = mrec
+                area_under_curve_x.insert(0, 0.0)
+                area_under_curve_x.append(mrec[-1])
+
+                area_under_curve_y = mprec
+                area_under_curve_y.insert(0, 1.0)
+                area_under_curve_y.append(0.0)
+            else:
+                area_under_curve_x = mrec[:-1] + [mrec[-2]] + [mrec[-1]]
+                area_under_curve_y = mprec[:-1] + [0.0] + [mprec[-1]]
+
             plt.fill_between(area_under_curve_x, 0, area_under_curve_y, alpha=0.2, edgecolor='r')
             # set window title
             fig = plt.gcf() # gcf - get current figure
